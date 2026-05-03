@@ -19,10 +19,13 @@ Optional:
 """
 
 import asyncio
+import html
 import json
 import logging
 import os
 import time
+import urllib.error
+import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -47,6 +50,12 @@ SHEET_NAME   = "CRM"
 TZ           = ZoneInfo("America/Los_Angeles")
 SCOPES       = ["https://www.googleapis.com/auth/spreadsheets"]
 
+# Email notifications via Resend. Both must be set for emails to fire.
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "").strip()
+FROM_EMAIL     = os.environ.get("FROM_EMAIL", "juansrebates <onboarding@resend.dev>").strip()
+SHEET_URL      = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
+
 # Map landing-page payload keys → exact CRM column headers.
 HEADER_MAP = {
     "firstName":         "First Name",
@@ -61,6 +70,129 @@ HEADER_MAP = {
 
 # Async lock — sheet writes are serialized to avoid row-allocation races.
 LOCK = asyncio.Lock()
+
+
+# --------------------------------------------------------------------------
+# Email notifications (Resend)
+# --------------------------------------------------------------------------
+def _send_email_sync(subject: str, html_body: str, text_body: str) -> None:
+    """Blocking call to Resend's HTTP API. Swallows errors after logging."""
+    if not RESEND_API_KEY or not NOTIFY_EMAIL:
+        log.info("email skipped: RESEND_API_KEY or NOTIFY_EMAIL not set")
+        return
+    payload = json.dumps({
+        "from":    FROM_EMAIL,
+        "to":      [NOTIFY_EMAIL],
+        "subject": subject,
+        "html":    html_body,
+        "text":    text_body,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type":  "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            log.info("email sent: subject=%r status=%s", subject, resp.status)
+    except urllib.error.HTTPError as e:
+        log.error("email failed (HTTP %s): %s", e.code, e.read().decode("utf-8", errors="ignore"))
+    except Exception as e:
+        log.error("email failed: %s", e)
+
+
+async def send_email(subject: str, html_body: str, text_body: str) -> None:
+    """Fire-and-forget email send. Does not block or raise."""
+    try:
+        await asyncio.to_thread(_send_email_sync, subject, html_body, text_body)
+    except Exception as e:
+        log.error("send_email outer failed: %s", e)
+
+
+def _esc(v) -> str:
+    return html.escape(str(v)) if v else ""
+
+
+def build_lead_email(d: dict, submission_id: str) -> tuple[str, str, str]:
+    name = (d.get("firstName", "") + " " + d.get("lastName", "")).strip() or "(no name)"
+    phone = d.get("phone", "") or "-"
+    email = d.get("email", "") or "-"
+    buying = d.get("buying", "") or "-"
+    city = d.get("targetCity", "") or "-"
+    timeframe = d.get("timeframe", "") or "-"
+    language = d.get("preferredLanguage", "") or "-"
+    sms = "Yes" if d.get("smsConsent") == "Yes" else "No"
+    calc = build_calc_note(d) or "-"
+
+    subject = f"\U0001F3E0 New rebate lead — {name}"
+
+    text_body = (
+        f"New lead from juansrebates.com\n"
+        f"-----------------------------------\n"
+        f"Name:       {name}\n"
+        f"Phone:      {phone}\n"
+        f"Email:      {email}\n"
+        f"Buying:     {buying}\n"
+        f"City:       {city}\n"
+        f"Timeframe:  {timeframe}\n"
+        f"Language:   {language}\n"
+        f"SMS OK:     {sms}\n"
+        f"Calc:       {calc}\n"
+        f"Submitted:  {now_str()}\n"
+        f"Lead ID:    {submission_id}\n\n"
+        f"Open MiniCRM: {SHEET_URL}\n"
+    )
+
+    html_body = f"""\
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#0f172a;max-width:560px;">
+  <h2 style="margin:0 0 8px 0;color:#064C74;">\U0001F3E0 New rebate lead</h2>
+  <p style="margin:0 0 16px 0;color:#475569;">From <strong>juansrebates.com</strong> — submitted {_esc(now_str())}</p>
+  <table style="border-collapse:collapse;font-size:14px;width:100%;">
+    <tr><td style="padding:6px 12px 6px 0;color:#64748b;">Name</td><td style="padding:6px 0;font-weight:600;">{_esc(name)}</td></tr>
+    <tr><td style="padding:6px 12px 6px 0;color:#64748b;">Phone</td><td style="padding:6px 0;"><a href="tel:{_esc(phone)}" style="color:#0E7C66;text-decoration:none;">{_esc(phone)}</a></td></tr>
+    <tr><td style="padding:6px 12px 6px 0;color:#64748b;">Email</td><td style="padding:6px 0;"><a href="mailto:{_esc(email)}" style="color:#0E7C66;text-decoration:none;">{_esc(email)}</a></td></tr>
+    <tr><td style="padding:6px 12px 6px 0;color:#64748b;">Buying</td><td style="padding:6px 0;">{_esc(buying)}</td></tr>
+    <tr><td style="padding:6px 12px 6px 0;color:#64748b;">City</td><td style="padding:6px 0;">{_esc(city)}</td></tr>
+    <tr><td style="padding:6px 12px 6px 0;color:#64748b;">Timeframe</td><td style="padding:6px 0;">{_esc(timeframe)}</td></tr>
+    <tr><td style="padding:6px 12px 6px 0;color:#64748b;">Language</td><td style="padding:6px 0;">{_esc(language)}</td></tr>
+    <tr><td style="padding:6px 12px 6px 0;color:#64748b;">SMS OK</td><td style="padding:6px 0;">{_esc(sms)}</td></tr>
+    <tr><td style="padding:6px 12px 6px 0;color:#64748b;vertical-align:top;">Calc</td><td style="padding:6px 0;">{_esc(calc)}</td></tr>
+    <tr><td style="padding:6px 12px 6px 0;color:#64748b;">Lead ID</td><td style="padding:6px 0;font-family:ui-monospace,monospace;color:#94a3b8;font-size:12px;">{_esc(submission_id)}</td></tr>
+  </table>
+  <p style="margin:20px 0 0 0;">
+    <a href="{SHEET_URL}" style="display:inline-block;background:#064C74;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;">Open MiniCRM</a>
+  </p>
+</div>
+"""
+    return subject, html_body, text_body
+
+
+def build_prize_email(lead_id: str, prize: str, prize_detail: str) -> tuple[str, str, str]:
+    subject = f"\U0001F389 Prize awarded: {prize} (lead {lead_id})"
+    text_body = (
+        f"Prize awarded\n"
+        f"-----------------------------------\n"
+        f"Prize:    {prize}\n"
+        f"Lead ID:  {lead_id}\n"
+        f"At:       {now_str()}\n"
+        f"Detail:   {prize_detail or '-'}\n\n"
+        f"Open MiniCRM: {SHEET_URL}\n"
+    )
+    html_body = f"""\
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#0f172a;max-width:560px;">
+  <h2 style="margin:0 0 8px 0;color:#064C74;">\U0001F389 Prize awarded: <span style="color:#0E7C66;">{_esc(prize)}</span></h2>
+  <p style="margin:0 0 16px 0;color:#475569;">{_esc(now_str())} — Lead <span style="font-family:ui-monospace,monospace;color:#94a3b8;">{_esc(lead_id)}</span></p>
+  <p style="margin:0 0 12px 0;">{_esc(prize_detail)}</p>
+  <p style="margin:20px 0 0 0;">
+    <a href="{SHEET_URL}" style="display:inline-block;background:#064C74;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;">Open MiniCRM</a>
+  </p>
+</div>
+"""
+    return subject, html_body, text_body
 
 
 # --------------------------------------------------------------------------
@@ -307,8 +439,19 @@ async def submit(request: Request):
         async with LOCK:
             if body.get("type") == "prize":
                 result = await update_prize(body)
+                # Fire-and-forget email notification.
+                if result.get("ok"):
+                    subj, html_b, text_b = build_prize_email(
+                        body.get("leadId", ""),
+                        body.get("prize", ""),
+                        body.get("prizeDetail", ""),
+                    )
+                    asyncio.create_task(send_email(subj, html_b, text_b))
             else:
                 result = await append_lead_row(body)
+                if result.get("ok"):
+                    subj, html_b, text_b = build_lead_email(body, result.get("leadId", ""))
+                    asyncio.create_task(send_email(subj, html_b, text_b))
         return JSONResponse(result)
     except HttpError as e:
         log.exception("Google API error")
