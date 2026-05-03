@@ -94,6 +94,7 @@ def _send_email_sync(subject: str, html_body: str, text_body: str) -> None:
         headers={
             "Authorization": f"Bearer {RESEND_API_KEY}",
             "Content-Type":  "application/json",
+            "User-Agent":    "juansrebates-backend/1.0",
         },
     )
     try:
