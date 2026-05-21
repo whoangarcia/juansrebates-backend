@@ -66,6 +66,12 @@ HEADER_MAP = {
     "targetCity":        "Target City",
     "timeframe":         "Timeframe",
     "preferredLanguage": "Preferred Language",
+    # UTM tracking fields (added by readUtms() on the frontend).
+    "utm_source":        "utm_source",
+    "utm_medium":        "utm_medium",
+    "utm_campaign":      "utm_campaign",
+    "utm_content":       "utm_content",
+    "utm_term":          "utm_term",
 }
 
 # Async lock — sheet writes are serialized to avoid row-allocation races.
@@ -281,6 +287,12 @@ def build_lead_row(d: dict) -> tuple[dict, str]:
         ),
         "prize":              "",
         "Notes":              build_calc_note(d),
+        # UTM tracking fields — written if present in payload, empty otherwise.
+        "utm_source":         d.get("utm_source", ""),
+        "utm_medium":         d.get("utm_medium", ""),
+        "utm_campaign":       d.get("utm_campaign", ""),
+        "utm_content":        d.get("utm_content", ""),
+        "utm_term":           d.get("utm_term", ""),
     }
     return row, submission_id
 
