@@ -81,14 +81,19 @@ LOCK = asyncio.Lock()
 # --------------------------------------------------------------------------
 # Email notifications (Resend)
 # --------------------------------------------------------------------------
-def _send_email_sync(subject: str, html_body: str, text_body: str) -> None:
-    """Blocking call to Resend's HTTP API. Swallows errors after logging."""
-    if not RESEND_API_KEY or not NOTIFY_EMAIL:
-        log.info("email skipped: RESEND_API_KEY or NOTIFY_EMAIL not set")
+def _send_email_sync(subject: str, html_body: str, text_body: str, to_email: str = "") -> None:
+    """Blocking call to Resend's HTTP API. Swallows errors after logging.
+    If to_email is empty, defaults to NOTIFY_EMAIL (agent notification)."""
+    if not RESEND_API_KEY:
+        log.info("email skipped: RESEND_API_KEY not set")
+        return
+    recipient = (to_email or NOTIFY_EMAIL or "").strip()
+    if not recipient:
+        log.info("email skipped: no recipient (NOTIFY_EMAIL not set and no to_email passed)")
         return
     payload = json.dumps({
         "from":    FROM_EMAIL,
-        "to":      [NOTIFY_EMAIL],
+        "to":      [recipient],
         "subject": subject,
         "html":    html_body,
         "text":    text_body,
@@ -112,10 +117,11 @@ def _send_email_sync(subject: str, html_body: str, text_body: str) -> None:
         log.error("email failed: %s", e)
 
 
-async def send_email(subject: str, html_body: str, text_body: str) -> None:
-    """Fire-and-forget email send. Does not block or raise."""
+async def send_email(subject: str, html_body: str, text_body: str, to_email: str = "") -> None:
+    """Fire-and-forget email send. Does not block or raise.
+    Pass to_email to override the default NOTIFY_EMAIL recipient."""
     try:
-        await asyncio.to_thread(_send_email_sync, subject, html_body, text_body)
+        await asyncio.to_thread(_send_email_sync, subject, html_body, text_body, to_email)
     except Exception as e:
         log.error("send_email outer failed: %s", e)
 
@@ -196,6 +202,96 @@ def build_prize_email(lead_id: str, prize: str, prize_detail: str) -> tuple[str,
   <p style="margin:0 0 12px 0;">{_esc(prize_detail)}</p>
   <p style="margin:20px 0 0 0;">
     <a href="{SHEET_URL}" style="display:inline-block;background:#064C74;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;">Open MiniCRM</a>
+  </p>
+</div>
+"""
+    return subject, html_body, text_body
+
+
+# --------------------------------------------------------------------------
+# Lead-facing welcome email (bilingual EN/ES)
+# --------------------------------------------------------------------------
+BOOKING_URL = "https://calendar.app.google/NaBUBuYuQgpWE4jc8"
+AGENT_NAME  = "Juan Garcia"
+AGENT_PHONE = "209-605-9911"
+BROKERAGE   = "West Wide Finance & Realty"
+DRE_AGENT   = "01413283"
+DRE_BROKER  = "02106609"
+NMLS_ID     = "1928589"
+
+def build_lead_welcome_email(d: dict, submission_id: str) -> tuple[str, str, str]:
+    """Bilingual welcome email sent to the lead immediately after form submission.
+    Detects language from preferredLanguage field (defaults to English)."""
+    first    = (d.get("firstName") or "there").strip() or "there"
+    prize    = (d.get("prize") or "").strip()
+    lang_raw = (d.get("preferredLanguage") or "").strip().lower()
+    is_es    = lang_raw.startswith("es") or lang_raw in ("spanish", "espa\u00f1ol", "espanol")
+
+    if is_es:
+        subject = f"\u00a1Bienvenido, {first}! Tu certificado de reembolso est\u00e1 listo"
+        prize_line_text = f"Premio del giro: {prize}\n" if prize else ""
+        prize_line_html = f'<p style="margin:0 0 12px 0;"><strong>Premio del giro:</strong> {_esc(prize)}</p>' if prize else ""
+        text_body = (
+            f"Hola {first},\n\n"
+            f"\u00a1Gracias por usar juansrebates.com! Tu certificado de reembolso ya est\u00e1 reservado.\n\n"
+            f"{prize_line_text}"
+            f"Pr\u00f3ximo paso: reserva una consulta gratis de 15 minutos para confirmar tu premio y empezar a buscar casas.\n\n"
+            f"Reserva aqu\u00ed: {BOOKING_URL}\n\n"
+            f"\u00bfPreguntas? Llama o escr\u00edbeme: {AGENT_PHONE}\n\n"
+            f"\u2014 {AGENT_NAME}\n"
+            f"{BROKERAGE}\n"
+            f"CA DRE #{DRE_AGENT}  \u00b7  Brokerage DRE #{DRE_BROKER}  \u00b7  NMLS #{NMLS_ID}\n"
+            f"Lead ID: {submission_id}\n"
+        )
+        html_body = f"""\
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#0F3D4A;max-width:560px;background:#F2EDDF;padding:32px 28px;border-radius:12px;">
+  <h2 style="margin:0 0 6px 0;color:#0F3D4A;font-size:24px;">\u00a1Hola, {_esc(first)}! \ud83c\udf89</h2>
+  <p style="margin:0 0 18px 0;color:#0F3D4A;font-size:16px;line-height:1.5;">Gracias por usar <strong>juansrebates.com</strong>. Tu certificado de reembolso ya est\u00e1 reservado.</p>
+  {prize_line_html}
+  <p style="margin:18px 0 22px 0;font-size:15px;line-height:1.5;"><strong>Pr\u00f3ximo paso:</strong> reserva una consulta gratis de 15 minutos por tel\u00e9fono. Confirmamos tu premio, contestamos tus preguntas, y empezamos a buscar casas.</p>
+  <p style="margin:0 0 28px 0;">
+    <a href="{BOOKING_URL}" style="display:inline-block;background:#0F3D4A;color:#fff;padding:14px 26px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;">Reservar mi consulta de 15 min</a>
+  </p>
+  <p style="margin:0 0 8px 0;font-size:14px;color:#0F3D4A;">\u00bfPreguntas? Llama o escr\u00edbeme: <a href="tel:{AGENT_PHONE}" style="color:#B89328;text-decoration:none;font-weight:600;">{AGENT_PHONE}</a></p>
+  <hr style="border:none;border-top:1px solid #d4cab3;margin:24px 0 16px 0;">
+  <p style="margin:0;font-size:13px;color:#0F3D4A;line-height:1.6;">
+    \u2014 <strong>{_esc(AGENT_NAME)}</strong><br>
+    {_esc(BROKERAGE)}<br>
+    <span style="color:#6b7d80;">CA DRE #{DRE_AGENT} &nbsp;\u00b7&nbsp; Brokerage DRE #{DRE_BROKER} &nbsp;\u00b7&nbsp; NMLS #{NMLS_ID}</span>
+  </p>
+</div>
+"""
+    else:
+        subject = f"Welcome {first} \u2014 your rebate certificate is locked in"
+        prize_line_text = f"Spin prize: {prize}\n" if prize else ""
+        prize_line_html = f'<p style="margin:0 0 12px 0;"><strong>Spin prize:</strong> {_esc(prize)}</p>' if prize else ""
+        text_body = (
+            f"Hi {first},\n\n"
+            f"Thanks for using juansrebates.com! Your buyer rebate certificate is locked in.\n\n"
+            f"{prize_line_text}"
+            f"Next step: book a free 15-minute consult so we can confirm your prize and start touring homes.\n\n"
+            f"Book here: {BOOKING_URL}\n\n"
+            f"Questions? Call or text me: {AGENT_PHONE}\n\n"
+            f"\u2014 {AGENT_NAME}\n"
+            f"{BROKERAGE}\n"
+            f"CA DRE #{DRE_AGENT}  \u00b7  Brokerage DRE #{DRE_BROKER}  \u00b7  NMLS #{NMLS_ID}\n"
+            f"Lead ID: {submission_id}\n"
+        )
+        html_body = f"""\
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#0F3D4A;max-width:560px;background:#F2EDDF;padding:32px 28px;border-radius:12px;">
+  <h2 style="margin:0 0 6px 0;color:#0F3D4A;font-size:24px;">Hi {_esc(first)} \ud83c\udf89</h2>
+  <p style="margin:0 0 18px 0;color:#0F3D4A;font-size:16px;line-height:1.5;">Thanks for using <strong>juansrebates.com</strong>. Your buyer rebate certificate is locked in.</p>
+  {prize_line_html}
+  <p style="margin:18px 0 22px 0;font-size:15px;line-height:1.5;"><strong>Next step:</strong> book a free 15-minute phone consult. We'll confirm your prize, answer questions, and start lining up homes to tour.</p>
+  <p style="margin:0 0 28px 0;">
+    <a href="{BOOKING_URL}" style="display:inline-block;background:#0F3D4A;color:#fff;padding:14px 26px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;">Book my 15-min consult</a>
+  </p>
+  <p style="margin:0 0 8px 0;font-size:14px;color:#0F3D4A;">Questions? Call or text me: <a href="tel:{AGENT_PHONE}" style="color:#B89328;text-decoration:none;font-weight:600;">{AGENT_PHONE}</a></p>
+  <hr style="border:none;border-top:1px solid #d4cab3;margin:24px 0 16px 0;">
+  <p style="margin:0;font-size:13px;color:#0F3D4A;line-height:1.6;">
+    \u2014 <strong>{_esc(AGENT_NAME)}</strong><br>
+    {_esc(BROKERAGE)}<br>
+    <span style="color:#6b7d80;">CA DRE #{DRE_AGENT} &nbsp;\u00b7&nbsp; Brokerage DRE #{DRE_BROKER} &nbsp;\u00b7&nbsp; NMLS #{NMLS_ID}</span>
   </p>
 </div>
 """
@@ -463,8 +559,16 @@ async def submit(request: Request):
             else:
                 result = await append_lead_row(body)
                 if result.get("ok"):
+                    # 1) Agent notification (to NOTIFY_EMAIL).
                     subj, html_b, text_b = build_lead_email(body, result.get("leadId", ""))
                     asyncio.create_task(send_email(subj, html_b, text_b))
+                    # 2) Lead-facing welcome email with booking link.
+                    lead_email = (body.get("email") or "").strip()
+                    if lead_email and "@" in lead_email:
+                        w_subj, w_html, w_text = build_lead_welcome_email(
+                            body, result.get("leadId", "")
+                        )
+                        asyncio.create_task(send_email(w_subj, w_html, w_text, lead_email))
         return JSONResponse(result)
     except HttpError as e:
         log.exception("Google API error")
