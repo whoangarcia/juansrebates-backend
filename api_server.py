@@ -53,7 +53,7 @@ SCOPES       = ["https://www.googleapis.com/auth/spreadsheets"]
 # Email notifications via Resend. Both must be set for emails to fire.
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "").strip()
-FROM_EMAIL     = os.environ.get("FROM_EMAIL", "juansrebates <onboarding@resend.dev>").strip()
+FROM_EMAIL     = os.environ.get("FROM_EMAIL", "Juan Garcia <rebates@juansrebates.com>").strip()
 SHEET_URL      = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
 
 # Map landing-page payload keys → exact CRM column headers.
