@@ -60,7 +60,7 @@ SHEET_URL      = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
 HEADER_MAP = {
     "firstName":         "First Name",
     "lastName":          "Last Name",
-    "phone":             "",
+    "phone":             "Phone",
     "email":             "Email",
     "buying":            "Are you buying",
     "targetCity":        "Target City",
@@ -368,7 +368,7 @@ def build_lead_row(d: dict) -> tuple[dict, str]:
         "Submitted at":       now_str(),
         "First Name":         d.get("firstName", ""),
         "Last Name":          d.get("lastName", ""),
-        "":       d.get("phone", ""),
+        "Phone":       d.get("phone", ""),
         "Email":              d.get("email", ""),
         "Are you buying":     d.get("buying", ""),
         "Target City":        d.get("targetCity", ""),
